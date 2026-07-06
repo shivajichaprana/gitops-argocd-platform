@@ -1,0 +1,13 @@
+# Rendered/build output
+rendered/
+build/
+*.rendered.yaml
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local tooling caches
+.kustomize-cache/
