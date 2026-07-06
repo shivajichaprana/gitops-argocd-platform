@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+    # Argo CD's repo-server and dex containers need baseline (not restricted)
+    # under Pod Security Standards; workloads deployed BY Argo CD should still
+    # target restricted namespaces of their own.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/warn: restricted

@@ -1,0 +1,43 @@
+# Root Application — the single manifest applied by hand after the Argo CD
+# install. It points Argo CD back at this repository's appsets/ directory, so
+# every ApplicationSet committed there (cluster addons, tenant apps) is created
+# and reconciled automatically. From this point on, Git drives the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    # Cascade deletion: removing the root Application tears down the child
+    # ApplicationSets (and their Applications) instead of orphaning them.
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # The root reconciles before anything it creates.
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
+    targetRevision: main
+    path: appsets
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # Remove resources whose manifests were deleted from Git...
+      prune: true
+      # ...and revert out-of-band edits made directly against the cluster.
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # Apply CRDs and namespaces before the resources that depend on them.
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

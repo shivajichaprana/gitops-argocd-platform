@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Installs Argo CD into its own namespace from the pinned upstream release
+# manifest, then layers EKS-specific patches on top. Apply with:
+#
+#   kubectl apply -k bootstrap/argocd
+#
+# Upgrading Argo CD = bumping the release tag below in a pull request. The tag
+# is immutable upstream, so every cluster bootstrapped from a given commit of
+# this repo gets an identical control plane.
+namespace: argocd
+
+resources:
+  - namespace.yaml
+  # Pinned upstream install manifest (non-HA). Switch to manifests/ha/install.yaml
+  # for multi-replica controllers once the cluster runs multiple nodes across AZs.
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.3/manifests/install.yaml
+
+patches:
+  # TLS terminates at the AWS load balancer in front of argocd-server, so the
+  # server container itself runs plain HTTP inside the pod network.
+  - path: patches/argocd-cmd-params-cm.yaml
+  # Explicit resource requests/limits so the control plane schedules predictably
+  # and is a well-behaved neighbour on shared nodes.
+  - path: patches/argocd-server-resources.yaml
+  - path: patches/argocd-repo-server-resources.yaml
+  - path: patches/argocd-application-controller-resources.yaml
