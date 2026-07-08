@@ -1,0 +1,5 @@
+{
+  "tenant": "team-alpha",
+  "namespace": "team-alpha",
+  "environment": "dev"
+}

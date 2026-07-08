@@ -16,6 +16,7 @@ Argo CD reconciles it, and drift is corrected automatically.
 | `bootstrap/argocd/` | Kustomize overlay that installs a pinned Argo CD release with EKS-specific patches |
 | `bootstrap/app-of-apps.yaml` | Root Application — the only manifest ever applied by hand |
 | `appsets/` | ApplicationSets that stamp out cluster addons and per-tenant applications |
+| `tenants/` | Tenant registrations (`config.json`) and workload manifests discovered by the tenants ApplicationSet |
 | `apps/` | Workload manifests, including canary Rollouts and analysis templates |
 | `projects/` | AppProjects with RBAC boundaries and sync-wave ordering |
 | `notifications/` | Argo CD notifications configuration (delivery to chat/webhooks) |

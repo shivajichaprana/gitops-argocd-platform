@@ -1,0 +1,69 @@
+# ApplicationSet: tenant applications.
+#
+# Discovers tenants from this repository: every tenants/<name>/config.json
+# registers one tenant, and the manifests/ directory beside it holds the
+# tenant's workload. Onboarding a team is therefore a pull request that adds
+# a directory — no Argo CD configuration changes, no controller access.
+#
+# Required keys in each config.json (generation fails loudly on a missing
+# key, by design):
+#   tenant       — short DNS-safe tenant name, used in the Application name
+#   namespace    — destination namespace for the tenant's workload
+#   environment  — informational label (for example dev, staging, prod)
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tenants
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
+        revision: main
+        files:
+          - path: tenants/*/config.json
+  template:
+    metadata:
+      name: 'tenant-{{ .tenant }}'
+      namespace: argocd
+      finalizers:
+        # Cascade: offboarding a tenant (deleting its directory) prunes the
+        # Application and everything it deployed.
+        - resources-finalizer.argocd.argoproj.io
+      annotations:
+        # Tenant workloads reconcile after all cluster addons (waves 0-20 in
+        # cluster-addons.yaml) whenever a parent replays apps in wave order.
+        argocd.argoproj.io/sync-wave: "30"
+      labels:
+        app.kubernetes.io/part-of: tenants
+        tenant: '{{ .tenant }}'
+        environment: '{{ .environment }}'
+    spec:
+      # Tenants deploy through the default project for now; dedicated
+      # AppProjects with per-team RBAC and repo/namespace allow-lists are the
+      # intended isolation boundary and replace this wholesale.
+      project: default
+      source:
+        repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
+        targetRevision: main
+        # config.json sits at tenants/<name>/config.json, so .path.path is
+        # the tenant directory; workloads live in its manifests/ subdirectory.
+        path: '{{ .path.path }}/manifests'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ .namespace }}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m

@@ -1,0 +1,58 @@
+# Reference tenant workload: a minimal unprivileged web server that satisfies
+# a restricted Pod Security profile (non-root, no privilege escalation, all
+# capabilities dropped, RuntimeDefault seccomp) and defines the probes and
+# resource bounds every tenant workload is expected to carry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-web
+  labels:
+    app.kubernetes.io/name: hello-web
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hello-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hello-web
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          # Unprivileged nginx variant: listens on 8080, runs as uid 101.
+          image: nginxinc/nginx-unprivileged:1.27.3-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

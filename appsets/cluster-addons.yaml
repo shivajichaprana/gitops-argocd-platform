@@ -1,0 +1,159 @@
+# ApplicationSet: cluster addons.
+#
+# Stamps out one Argo CD Application per platform addon from the explicit,
+# pinned list below. Every addon is an upstream Helm chart referenced by an
+# immutable chart version, so an upgrade is a one-line diff reviewed in a
+# pull request like any other change — never a moving tag.
+#
+# A list generator is deliberate here: addons are few, curated, and change
+# rarely, so an explicit allow-list beats filesystem discovery. Tenant
+# workloads take the opposite approach (see tenants.yaml).
+#
+# Ordering: the sync-wave annotation stamped onto each generated Application
+# documents the intended install order (CRD providers before consumers,
+# platform controllers before delivery tooling) and takes effect whenever a
+# parent app or progressive-sync tooling replays these Applications in wave
+# order. Each Application still reconciles independently once created.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cluster-addons
+  namespace: argocd
+spec:
+  goTemplate: true
+  # Fail generation loudly if a template references a key an element forgot
+  # to define — a silent empty string here would produce a broken Application.
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - list:
+        elements:
+          # ----------------------------------------------------------------
+          # Certificate management. Installed in the earliest wave: several
+          # controllers depend on its CRDs and webhook-issued certificates.
+          # ----------------------------------------------------------------
+          - name: cert-manager
+            namespace: cert-manager
+            repoURL: https://charts.jetstack.io
+            chart: cert-manager
+            version: v1.16.3
+            wave: "0"
+            values: |
+              crds:
+                # Ship the CRDs with the chart and keep them on uninstall so
+                # certificate resources are never garbage-collected by accident.
+                enabled: true
+                keep: true
+
+          # ----------------------------------------------------------------
+          # Resource metrics for `kubectl top` and the HPA. Upstream defaults
+          # work on EKS unmodified.
+          # ----------------------------------------------------------------
+          - name: metrics-server
+            namespace: kube-system
+            repoURL: https://kubernetes-sigs.github.io/metrics-server/
+            chart: metrics-server
+            version: 3.12.2
+            wave: "0"
+            values: ""
+
+          # ----------------------------------------------------------------
+          # AWS Load Balancer Controller — reconciles Ingress/Service into
+          # ALB/NLB. Requires an IRSA role; replace the placeholders with the
+          # values for your cluster before enabling.
+          # ----------------------------------------------------------------
+          - name: aws-load-balancer-controller
+            namespace: kube-system
+            repoURL: https://aws.github.io/eks-charts
+            chart: aws-load-balancer-controller
+            version: 1.11.0
+            wave: "10"
+            values: |
+              # Name of the EKS cluster as registered with the AWS API.
+              clusterName: <your-cluster-name>
+              serviceAccount:
+                create: true
+                name: aws-load-balancer-controller
+                annotations:
+                  # IRSA role carrying the controller's AWS permissions.
+                  eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/<your-alb-controller-role>
+
+          # ----------------------------------------------------------------
+          # ExternalDNS — publishes Ingress/Service hostnames to Route 53.
+          # upsert-only keeps it from deleting records it did not create.
+          # ----------------------------------------------------------------
+          - name: external-dns
+            namespace: external-dns
+            repoURL: https://kubernetes-sigs.github.io/external-dns/
+            chart: external-dns
+            version: 1.14.5
+            wave: "10"
+            values: |
+              provider: aws
+              policy: upsert-only
+              # Only manage records inside this zone.
+              domainFilters:
+                - <your-domain.example.com>
+              # Registry TXT owner id — must be unique per cluster and zone.
+              txtOwnerId: <your-cluster-name>
+              serviceAccount:
+                create: true
+                name: external-dns
+                annotations:
+                  # IRSA role scoped to the hosted zone above.
+                  eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/<your-external-dns-role>
+
+          # ----------------------------------------------------------------
+          # Argo Rollouts — progressive delivery controller (canary and
+          # blue/green Rollout resources plus AnalysisTemplates). Installed
+          # after core addons and before any tenant workload that uses it.
+          # ----------------------------------------------------------------
+          - name: argo-rollouts
+            namespace: argo-rollouts
+            repoURL: https://argoproj.github.io/argo-helm
+            chart: argo-rollouts
+            version: 2.38.0
+            wave: "20"
+            values: ""
+
+  template:
+    metadata:
+      name: '{{ .name }}'
+      # Application CRs live where the Argo CD controllers watch.
+      namespace: argocd
+      finalizers:
+        # Cascade: deleting a generated Application removes its resources.
+        - resources-finalizer.argocd.argoproj.io
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{ .wave }}'
+      labels:
+        app.kubernetes.io/part-of: cluster-addons
+    spec:
+      project: default
+      source:
+        repoURL: '{{ .repoURL }}'
+        chart: '{{ .chart }}'
+        targetRevision: '{{ .version }}'
+        helm:
+          # Stable release name regardless of the Application name Argo CD
+          # would otherwise derive.
+          releaseName: '{{ .name }}'
+          values: '{{ .values }}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ .namespace }}'
+      syncPolicy:
+        automated:
+          # Remove resources whose manifests were deleted from Git...
+          prune: true
+          # ...and revert out-of-band edits made directly against the cluster.
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          # Apply CRDs and namespaces before the resources that depend on them.
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
