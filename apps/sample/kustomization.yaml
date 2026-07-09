@@ -1,0 +1,18 @@
+# Kustomize entry point for the sample progressive-delivery workload.
+# `kustomize build apps/sample` renders the canary Rollout, its stable/canary
+# Services, and the analysis templates as a single applyable bundle. The owning
+# Argo CD Application creates the namespace via the CreateNamespace sync option.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: sample
+
+resources:
+  - rollout.yaml
+  - analysis-template.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: sample
+    # Label metadata only — selectors stay stable if labels change later.
+    includeSelectors: false

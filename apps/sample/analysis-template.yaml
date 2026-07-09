@@ -1,0 +1,75 @@
+# Automated canary analysis for the sample workload.
+#
+# These AnalysisTemplates are referenced by the Rollout's canary steps
+# (see rollout.yaml). During a canary, Argo Rollouts instantiates each template
+# as an AnalysisRun and queries Prometheus: if the success rate drops or tail
+# latency climbs past the thresholds below, the run fails, the Rollout aborts,
+# and all traffic shifts back to the stable revision automatically — no paging.
+#
+# The Prometheus address defaults to an in-cluster monitoring endpoint; override
+# the `prometheus-address` argument from the Rollout to target a different stack.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: sample-app
+spec:
+  args:
+    # Metric label the queries are scoped to (the canary Service name).
+    - name: service-name
+    - name: prometheus-address
+      value: http://prometheus-server.monitoring.svc.cluster.local:9090
+  metrics:
+    - name: success-rate
+      # Let traffic accrue, then sample every minute; require five good readings
+      # and tolerate at most two sub-threshold measurements before failing.
+      initialDelay: 60s
+      interval: 60s
+      count: 5
+      failureLimit: 2
+      # Guard against an empty result (no traffic) before comparing.
+      successCondition: "len(result) == 1 && result[0] >= 0.95"
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          # Fraction of non-5xx responses over a two-minute window.
+          query: |
+            sum(rate(
+              http_requests_total{service="{{args.service-name}}", code!~"5.."}[2m]
+            ))
+            /
+            sum(rate(
+              http_requests_total{service="{{args.service-name}}"}[2m]
+            ))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: latency-p95
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: sample-app
+spec:
+  args:
+    - name: service-name
+    - name: prometheus-address
+      value: http://prometheus-server.monitoring.svc.cluster.local:9090
+  metrics:
+    - name: latency-p95
+      initialDelay: 60s
+      interval: 60s
+      count: 5
+      failureLimit: 2
+      # 95th-percentile request latency (seconds) must stay at or below 500ms.
+      successCondition: "len(result) == 1 && result[0] <= 0.5"
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            histogram_quantile(0.95,
+              sum(rate(
+                http_request_duration_seconds_bucket{service="{{args.service-name}}"}[2m]
+              )) by (le)
+            )

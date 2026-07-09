@@ -1,0 +1,141 @@
+# Progressive delivery for the sample workload using Argo Rollouts.
+#
+# Rather than replacing every pod at once, a new version is shifted in gradually:
+# a slice of traffic moves to the canary, automated analysis (see
+# analysis-template.yaml) watches success rate and latency, and the release only
+# advances while the canary stays healthy — otherwise it aborts and rolls back.
+#
+# Two Services back the strategy: `sample-app-stable` always targets the stable
+# ReplicaSet and `sample-app-canary` targets the canary. Argo Rollouts injects
+# the per-revision pod-template-hash into each Service selector at runtime, so no
+# manual selector juggling is needed. With the basic (replica-based) canary here,
+# the step weights approximate the split via ReplicaSet sizing; wiring
+# `trafficRouting` to the cluster's AWS Load Balancer Controller turns them into
+# precise request-level weights.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app-stable
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: sample-app
+    app.kubernetes.io/component: stable
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sample-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app-canary
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: sample-app
+    app.kubernetes.io/component: canary
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sample-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: sample-app
+  namespace: sample
+  labels:
+    app.kubernetes.io/name: sample-app
+  annotations:
+    # Reconcile after the Argo Rollouts controller and its CRDs are installed by
+    # the cluster-addons ApplicationSet.
+    argocd.argoproj.io/sync-wave: "40"
+spec:
+  replicas: 5
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sample-app
+  strategy:
+    canary:
+      canaryService: sample-app-canary
+      stableService: sample-app-stable
+      # Keep full capacity during the shift: add one surge pod, never drop below
+      # the desired replica count.
+      maxSurge: 1
+      maxUnavailable: 0
+      steps:
+        # Shift a small slice of traffic to the new version and let it settle.
+        - setWeight: 20
+        - pause:
+            duration: 2m
+        # Gate: evaluate success-rate and latency against the canary. A failing
+        # AnalysisRun aborts the Rollout and returns all traffic to stable.
+        - analysis:
+            templates:
+              - templateName: success-rate
+              - templateName: latency-p95
+            args:
+              - name: service-name
+                value: sample-app-canary
+        - setWeight: 50
+        - pause:
+            duration: 5m
+        - setWeight: 80
+        - pause:
+            duration: 5m
+        # Completing the final step promotes the canary to stable at 100%.
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sample-app
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # Explicit non-root uid so the kubelet admits the pod even if the image
+        # default user is unset.
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # Reference workload for canary demonstrations; serves HTTP on 8080.
+          image: argoproj/rollouts-demo:blue
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
