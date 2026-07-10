@@ -1,0 +1,145 @@
+# AppProjects — the blast-radius boundary for everything Argo CD deploys.
+#
+# Each project constrains three things for the Applications assigned to it:
+# which Git/Helm sources they may pull from, which cluster and namespaces they
+# may deploy into, and which Kubernetes kinds they may create. Project roles
+# then attach RBAC policies so a team syncs its own Applications without
+# reaching anyone else's.
+#
+# Two projects are defined:
+#   platform-addons — trusted, cluster-wide platform components (ingress, DNS,
+#                     certificates, the progressive-delivery controller).
+#   tenants         — application teams, scoped away from the control plane and
+#                     forbidden from creating cluster-scoped objects.
+#
+# The sync-wave annotation orders these ahead of the Applications that name
+# them, so a project always exists before its members reconcile.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-addons
+  namespace: argocd
+  annotations:
+    # Reconcile before the addon Applications that reference this project.
+    argocd.argoproj.io/sync-wave: "-20"
+  finalizers:
+    # Cascade: removing the project cleans up its managed state.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Trusted cluster-wide platform addons (ingress, DNS, certs, delivery).
+  # Only the curated upstream chart repositories consumed by the addon
+  # ApplicationSet, plus this repository for any in-repo manifests.
+  sourceRepos:
+    - https://github.com/shivajichaprana/gitops-argocd-platform.git
+    - https://charts.jetstack.io
+    - https://kubernetes-sigs.github.io/metrics-server/
+    - https://aws.github.io/eks-charts
+    - https://kubernetes-sigs.github.io/external-dns/
+    - https://argoproj.github.io/argo-helm
+  # Addons install into their own namespaces on the in-cluster API server.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+    - server: https://kubernetes.default.svc
+      namespace: external-dns
+    - server: https://kubernetes.default.svc
+      namespace: argo-rollouts
+    - server: https://kubernetes.default.svc
+      namespace: kube-system
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+  # Platform addons legitimately manage cluster-scoped objects (CRDs, webhook
+  # configurations, ClusterRoles, IngressClasses). Trusted components, so the
+  # cluster-resource allow-list is open.
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  # Surface — but never auto-delete — resources in project namespaces that Git
+  # does not declare.
+  orphanedResources:
+    warn: true
+  roles:
+    # Full lifecycle control over the addon Applications.
+    - name: admin
+      description: Manage and sync platform addon Applications.
+      policies:
+        - p, proj:platform-addons:admin, applications, get, platform-addons/*, allow
+        - p, proj:platform-addons:admin, applications, sync, platform-addons/*, allow
+        - p, proj:platform-addons:admin, applications, update, platform-addons/*, allow
+        - p, proj:platform-addons:admin, applications, override, platform-addons/*, allow
+        - p, proj:platform-addons:admin, applications, action/*, platform-addons/*, allow
+      # Map an OIDC/SSO group to this role — replace with your identity group.
+      groups:
+        - <your-org>:platform-engineering
+    # Read-only visibility for everyone else.
+    - name: readonly
+      description: View platform addon Applications.
+      policies:
+        - p, proj:platform-addons:readonly, applications, get, platform-addons/*, allow
+      groups:
+        - <your-org>:developers
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tenants
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Application teams — namespace-scoped, no cluster-scoped resources.
+  # Tenants may deploy only manifests that live in this repository.
+  sourceRepos:
+    - https://github.com/shivajichaprana/gitops-argocd-platform.git
+  # Any namespace on the in-cluster server EXCEPT the control-plane and addon
+  # namespaces. A destination matching any negated pattern is denied, so the
+  # explicit denials below take precedence over the trailing wildcard.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: "!argocd"
+    - server: https://kubernetes.default.svc
+      namespace: "!kube-system"
+    - server: https://kubernetes.default.svc
+      namespace: "!kube-node-lease"
+    - server: https://kubernetes.default.svc
+      namespace: "!kube-public"
+    - server: https://kubernetes.default.svc
+      namespace: "!cert-manager"
+    - server: https://kubernetes.default.svc
+      namespace: "!external-dns"
+    - server: https://kubernetes.default.svc
+      namespace: "!argo-rollouts"
+    - server: https://kubernetes.default.svc
+      namespace: "*"
+  # Tenants may NOT create any cluster-scoped resource: the empty allow-list
+  # denies all of them.
+  clusterResourceWhitelist: []
+  # Namespaced kinds are broadly allowed, but resource-governance objects stay
+  # platform-owned so a tenant cannot widen its own quota or limits.
+  namespaceResourceBlacklist:
+    - group: ""
+      kind: ResourceQuota
+    - group: ""
+      kind: LimitRange
+  orphanedResources:
+    warn: true
+  roles:
+    - name: developer
+      description: Sync and view tenant Applications.
+      policies:
+        - p, proj:tenants:developer, applications, get, tenants/*, allow
+        - p, proj:tenants:developer, applications, sync, tenants/*, allow
+      groups:
+        - <your-org>:developers
+    - name: readonly
+      description: View tenant Applications.
+      policies:
+        - p, proj:tenants:readonly, applications, get, tenants/*, allow
+      groups:
+        - <your-org>:auditors

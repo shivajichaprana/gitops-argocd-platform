@@ -1,0 +1,90 @@
+# Platform configuration Applications.
+#
+# The root app-of-apps recurses this directory, so these Applications are
+# adopted automatically once the control plane is up. They install the
+# platform state that must exist before workloads reconcile:
+#
+#   platform-projects       — the AppProjects every addon and tenant
+#                             Application is assigned to (blast-radius
+#                             boundaries and per-team RBAC).
+#   platform-notifications  — the notifications controller configuration.
+#
+# Both run in the always-present default project and carry an early sync-wave
+# so the AppProjects land before the addon and tenant ApplicationSets. Managing
+# the projects through Argo CD (rather than the one-time bootstrap overlay)
+# keeps them self-healing and avoids applying custom resources in the same pass
+# that installs their CustomResourceDefinition.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-projects
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Create the AppProjects before the Applications that reference them.
+    argocd.argoproj.io/sync-wave: "-20"
+  labels:
+    app.kubernetes.io/part-of: platform-config
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
+    targetRevision: main
+    path: projects
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # Remove resources whose manifests were deleted from Git...
+      prune: true
+      # ...and revert out-of-band edits made directly against the cluster.
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-notifications
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Configure notifications right after the projects, still ahead of workloads.
+    argocd.argoproj.io/sync-wave: "-19"
+  labels:
+    app.kubernetes.io/part-of: platform-config
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
+    targetRevision: main
+    path: notifications
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

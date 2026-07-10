@@ -41,10 +41,10 @@ spec:
         tenant: '{{ .tenant }}'
         environment: '{{ .environment }}'
     spec:
-      # Tenants deploy through the default project for now; dedicated
-      # AppProjects with per-team RBAC and repo/namespace allow-lists are the
-      # intended isolation boundary and replace this wholesale.
-      project: default
+      # Each tenant Application is assigned to the shared tenants AppProject,
+      # which forbids cluster-scoped resources and confines deployments to
+      # non-control-plane namespaces (see projects/appprojects.yaml).
+      project: tenants
       source:
         repoURL: https://github.com/shivajichaprana/gitops-argocd-platform.git
         targetRevision: main

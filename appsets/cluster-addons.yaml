@@ -128,7 +128,7 @@ spec:
       labels:
         app.kubernetes.io/part-of: cluster-addons
     spec:
-      project: default
+      project: platform-addons
       source:
         repoURL: '{{ .repoURL }}'
         chart: '{{ .chart }}'

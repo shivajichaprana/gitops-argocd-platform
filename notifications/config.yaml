@@ -1,0 +1,86 @@
+# Argo CD notifications configuration.
+#
+# Populates the notifications controller's ConfigMap with a delivery service,
+# message templates, and the triggers that fire them. The controller ships
+# with the Argo CD install; this manifest gives it something to say and a
+# channel to say it on.
+#
+# Secrets stay OUT of Git: the Slack bot token is referenced as $slack-token
+# and must be supplied at runtime through the argocd-notifications-secret (for
+# example via External Secrets) — never committed here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-notifications-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+data:
+  # ---- Delivery service -------------------------------------------------
+  # Slack bot token resolved from the notifications secret at runtime.
+  service.slack: |
+    token: $slack-token
+
+  # ---- Message templates ------------------------------------------------
+  template.app-sync-succeeded: |
+    message: |
+      Application {{.app.metadata.name}} is now in sync.
+      Revision {{.app.status.sync.revision}} reconciled successfully.
+    slack:
+      attachments: |
+        [{
+          "title": "{{.app.metadata.name}}",
+          "color": "#18be52",
+          "fields": [
+            {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true},
+            {"title": "Health", "value": "{{.app.status.health.status}}", "short": true}
+          ]
+        }]
+  template.app-sync-failed: |
+    message: |
+      Application {{.app.metadata.name}} failed to sync.
+      Inspect the Application for the failing resources.
+    slack:
+      attachments: |
+        [{
+          "title": "{{.app.metadata.name}}",
+          "color": "#e01e5a",
+          "fields": [
+            {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true},
+            {"title": "Health", "value": "{{.app.status.health.status}}", "short": true}
+          ]
+        }]
+  template.app-health-degraded: |
+    message: |
+      Application {{.app.metadata.name}} health is degraded.
+    slack:
+      attachments: |
+        [{
+          "title": "{{.app.metadata.name}}",
+          "color": "#f4c430",
+          "fields": [
+            {"title": "Health", "value": "{{.app.status.health.status}}", "short": true}
+          ]
+        }]
+
+  # ---- Triggers ---------------------------------------------------------
+  trigger.on-sync-succeeded: |
+    - when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+      send: [app-sync-succeeded]
+  trigger.on-sync-failed: |
+    - when: app.status.operationState.phase in ['Error', 'Failed']
+      send: [app-sync-failed]
+  trigger.on-health-degraded: |
+    - when: app.status.health.status == 'Degraded'
+      send: [app-health-degraded]
+
+  # ---- Default subscriptions -------------------------------------------
+  # Applications opt in by annotation; this default routes the three triggers
+  # to a Slack channel unless an Application overrides it. Replace the channel.
+  subscriptions: |
+    - recipients:
+        - slack:<your-alerts-channel>
+      triggers:
+        - on-sync-succeeded
+        - on-sync-failed
+        - on-health-degraded
